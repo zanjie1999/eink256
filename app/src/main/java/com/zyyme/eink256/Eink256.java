@@ -52,17 +52,14 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         // 加载 Native 库
         loadNativeLib();
 
-        // ============================================================
-        // Hook 策略 1: BitmapRegionDecoder (关键)
+        // 1. BitmapRegionDecoder
         // 目标: SubsamplingScaleImageView, 阅读器, 漫画应用等大图控件
-        // ============================================================
         hookBitmapRegionDecoder();
 
-        // ============================================================
-        // Hook 策略 2: BitmapFactory
+        // 2. BitmapFactory
         // 目标: Glide, Picasso, 普通 ImageView, 背景图等
-        // ============================================================
         hookBitmapFactory();
+
     }
 
     /**
@@ -170,6 +167,8 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+
+
     /**
      * 调用 JNI 处理 Bitmap
      */
@@ -179,6 +178,7 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // 二次检查：如果 Bitmap 不可变，我们无法原地修改
         if (!bitmap.isMutable()) {
+            XposedBridge.log("zyymeEink256: Bitmap不可变，跳过");
             // 可以在这里尝试 copy 一份并 replaceResult，但性能开销大，
             // 最好还是依靠 beforeHookedMethod 里的 forceMutable。
             return;
@@ -191,12 +191,10 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             return;
         }
 
-        XposedBridge.log("zyymeEink256: 处理图片: " + width + "x" + height);
-
         try {
             Eink256Native.ditherBitmap(bitmap);
         } catch (Throwable t) {
-            XposedBridge.log("zyymeEink256: 处理出现异常: " + t.getMessage());
+            XposedBridge.log("zyymeEink256: 调用jni出现异常: " + t.getMessage());
             // 捕获所有异常，防止导致宿主应用崩溃
             // 常见错误：UnsatisfiedLinkError (库未加载), IllegalStateException
         }

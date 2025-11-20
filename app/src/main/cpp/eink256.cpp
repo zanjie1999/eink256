@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>
+#include <android/log.h>
 
 // 辅助宏：将值限制在 0-255 之间
 #define CLAMP(val) (val < 0 ? 0 : (val > 255 ? 255 : val))
@@ -125,6 +126,9 @@ Java_com_zyyme_eink256_Eink256Native_ditherBitmap(JNIEnv* env, jclass clazz, job
 
     if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) return;
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) < 0) return;
+
+    // 会打到logcat
+    __android_log_print(ANDROID_LOG_INFO, "zyymeEink256", "Dithering Bitmap: W=%d H=%d Format=%d", info.width, info.height, info.format);
 
     // 根据图片格式分发到不同的处理逻辑
     if (info.format == ANDROID_BITMAP_FORMAT_RGBA_8888) {
