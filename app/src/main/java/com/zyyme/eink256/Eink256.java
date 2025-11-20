@@ -4,8 +4,14 @@ package com.zyyme.eink256;
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.ImageDecoder;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.Build;
+import android.util.Log;
 
 import java.io.File;
 import java.util.Arrays;
@@ -16,6 +22,7 @@ import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.IXposedHookZygoteInit;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
@@ -58,7 +65,7 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         // 目标: SubsamplingScaleImageView, 阅读器, 漫画应用等大图控件
         hookBitmapRegionDecoder();
 
-        // 2. BitmapFactory
+        // 2. BitmapFactory  用的最多
         // 目标: Glide, Picasso, 普通 ImageView, 背景图等
         hookBitmapFactory();
 
@@ -67,6 +74,9 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             hookImageDecoder();
         }
+
+        // 4. Canvas 绘制 Hook   实测他们抖不用这个绘制
+//        hookCanvasDraw();
     }
 
     /**
@@ -113,6 +123,7 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                 Bitmap result = (Bitmap) param.getResult();
+//                Log.d("zyymeEink256", "hookBitmapRegionDecoder");
                 processBitmap(result);
             }
         });
@@ -144,6 +155,7 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+//                Log.d("zyymeEink256", "hookBitmapFactory " + param.method.getName());
                 processBitmap((Bitmap) param.getResult());
             }
         };
@@ -212,10 +224,48 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                 Bitmap result = (Bitmap) param.getResult();
+//                Log.d("zyymeEink256", "hookImageDecoder");
                 processBitmap(result);
             }
         });
     }
+
+    /**
+     * Hook Canvas绘制
+     */
+    private void hookCanvasDraw() {
+        // Hook drawBitmap(Bitmap bitmap, float left, float top, Paint paint)
+        XposedHelpers.findAndHookMethod(Canvas.class, "drawBitmap", Bitmap.class, float.class, float.class, Paint.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                // 绘制前的位图是参数 0
+                Bitmap bitmap = (Bitmap) param.args[0];
+//                Log.d("zyymeEink256", "hookCanvasDraw1");
+                processBitmap(bitmap);
+            }
+        });
+
+        // Hook drawBitmap(Bitmap bitmap, Rect src, RectF dst, Paint paint) - 用于缩放/裁剪绘制
+        XposedHelpers.findAndHookMethod(Canvas.class, "drawBitmap", Bitmap.class, Rect.class, RectF.class, Paint.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Bitmap bitmap = (Bitmap) param.args[0];
+//                Log.d("zyymeEink256", "hookCanvasDraw2");
+                processBitmap(bitmap);
+            }
+        });
+
+        // Hook drawBitmap(Bitmap bitmap, Matrix matrix, Paint paint) - 用于复杂变换绘制
+        XposedHelpers.findAndHookMethod(Canvas.class, "drawBitmap", Bitmap.class, Matrix.class, Paint.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Bitmap bitmap = (Bitmap) param.args[0];
+//                Log.d("zyymeEink256", "hookCanvasDraw3");
+                processBitmap(bitmap);
+            }
+        });
+    }
+
 
     // 代理 Listener 类，用于强制修改 ImageDecoder 的配置
     // 必须是静态类以避免内存泄漏
