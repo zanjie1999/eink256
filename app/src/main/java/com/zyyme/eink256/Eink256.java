@@ -1,8 +1,10 @@
 package com.zyyme.eink256;
 
 
+import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 import android.os.Build;
 
 import java.io.File;
@@ -60,6 +62,11 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         // 目标: Glide, Picasso, 普通 ImageView, 背景图等
         hookBitmapFactory();
 
+        // 3. ImageDecoder (Android P / API 28+)
+        // 目标: TachiyomiJ2K, Coil, 以及所有使用新版 API 的应用
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            hookImageDecoder();
+        }
     }
 
     /**
@@ -167,7 +174,75 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /**
+     * Hook 新的ImageDecoder
+     */
+    @TargetApi(Build.VERSION_CODES.P)
+    private void hookImageDecoder() {
+        // ImageDecoder.decodeBitmap(Source, OnHeaderDecodedListener)
+        XposedBridge.hookAllMethods(ImageDecoder.class, "decodeBitmap", new XC_MethodHook() {
+            @TargetApi(Build.VERSION_CODES.P)
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                // 参数通常是 (Source, Listener) 或者 (Source)
 
+                ImageDecoder.OnHeaderDecodedListener originalListener = null;
+                int listenerIndex = -1;
+
+                // 寻找原始的 Listener 参数
+                if (param.args.length > 1 && param.args[1] instanceof ImageDecoder.OnHeaderDecodedListener) {
+                    originalListener = (ImageDecoder.OnHeaderDecodedListener) param.args[1];
+                    listenerIndex = 1;
+                }
+
+                // 创建我们的代理 Listener，用于注入配置
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    final ImageDecoder.OnHeaderDecodedListener proxyListener =
+                            new DitherHeaderListener(originalListener);
+
+                    // 如果原方法有 Listener 参数，替换它
+                    if (listenerIndex != -1) {
+                        param.args[listenerIndex] = proxyListener;
+                    }
+                    // 如果原方法没有 Listener 参数（例如单参数重载），我们很难强行插入，
+                    // 因为 decodeBitmap 是静态方法。不过 Coil 等库通常会使用带 Listener 的版本。
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                Bitmap result = (Bitmap) param.getResult();
+                processBitmap(result);
+            }
+        });
+    }
+
+    // 代理 Listener 类，用于强制修改 ImageDecoder 的配置
+    // 必须是静态类以避免内存泄漏
+    @TargetApi(Build.VERSION_CODES.P)
+    static class DitherHeaderListener implements ImageDecoder.OnHeaderDecodedListener {
+        private final ImageDecoder.OnHeaderDecodedListener original;
+
+        DitherHeaderListener(ImageDecoder.OnHeaderDecodedListener original) {
+            this.original = original;
+        }
+
+        @TargetApi(Build.VERSION_CODES.P)
+        @Override
+        public void onHeaderDecoded(ImageDecoder decoder, ImageDecoder.ImageInfo info, ImageDecoder.Source source) {
+            // 1. 强制使用软件内存分配 (Software Allocator)
+            // 这是解决 TachiyomiJ2K 黑屏/无效果的关键。Hardware Bitmap 无法被 JNI 修改。
+            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+
+            // 2. 强制可变 (Mutable)
+            decoder.setMutableRequired(true);
+
+            // 3. 执行 App 原本的逻辑 (如果有)
+            if (original != null) {
+                original.onHeaderDecoded(decoder, info, source);
+            }
+        }
+    }
 
     /**
      * 调用 JNI 处理 Bitmap
