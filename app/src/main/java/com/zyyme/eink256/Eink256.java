@@ -1,0 +1,179 @@
+package com.zyyme.eink256;
+
+
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.os.Build;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
+import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.IXposedHookZygoteInit;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
+
+public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
+
+    private static String MODULE_PATH = null;
+
+    @Override
+    public void initZygote(StartupParam startupParam) throws Throwable {
+        // 获取模块自身的安装路径，用于后续加载 .so 文件
+        // 这是解决 "UnsatisfiedLinkError" 最稳健的方法
+        MODULE_PATH = startupParam.modulePath;
+    }
+
+    @Override
+    public void handleLoadPackage(final LoadPackageParam lpparam) throws Throwable {
+        // 防止 Hook 模块自身导致死循环
+        if (lpparam.packageName.equals("com.example.xposed")) return;
+
+        // 加载 Native 库
+        loadNativeLib();
+
+        // ============================================================
+        // Hook 策略 1: BitmapRegionDecoder (关键)
+        // 目标: SubsamplingScaleImageView, 阅读器, 漫画应用等大图控件
+        // ============================================================
+        hookBitmapRegionDecoder();
+
+        // ============================================================
+        // Hook 策略 2: BitmapFactory
+        // 目标: Glide, Picasso, 普通 ImageView, 背景图等
+        // ============================================================
+        hookBitmapFactory();
+    }
+
+    /**
+     * 加载 JNI 库的逻辑
+     */
+    private void loadNativeLib() {
+        try {
+            // 尝试直接加载 (在较新的 Android 版本或某些环境可能有效)
+            System.loadLibrary("zyyme_eink256");
+        } catch (Throwable t1) {
+            try {
+                // 这是一个简化的加载逻辑，实际开发中可能需要从 APK 中解压 so 到 cache 目录
+                // 或者依赖 Android 的 nativeLibraryDir 机制。
+                // 这里假设用户已按照教程将 so 放置在正确位置或系统能找到。
+                // 如果是在 LSPosed 环境，通常会有更好的路径支持。
+                // DitherNative.loadLibrary(MODULE_PATH); // 需自行实现带路径的加载
+            } catch (Throwable t2) {
+                XposedBridge.log("XposedDither: Native 库加载失败: " + t2.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Hook 区域解码器，这是大图分块加载的核心
+     */
+    private void hookBitmapRegionDecoder() {
+        Class<?> decoderClass = android.graphics.BitmapRegionDecoder.class;
+
+        // Hook decodeRegion(Rect rect, BitmapFactory.Options options)
+        XposedBridge.hookAllMethods(decoderClass, "decodeRegion", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                // 关键优化：在解码发生前，强制设置 Options
+                // 参数索引 1 通常是 BitmapFactory.Options
+                if (param.args.length > 1 && param.args[1] instanceof BitmapFactory.Options) {
+                    BitmapFactory.Options opts = (BitmapFactory.Options) param.args[1];
+                    forceMutable(opts);
+                } else if (param.args.length > 1 && param.args[1] == null) {
+                    // 如果 App 传了 null，我们需要创建一个 Options 塞进去，确保可变性
+                    // 注意：这可能会改变 App 的预期行为，但在墨水屏场景下是必要的
+                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                    forceMutable(opts);
+                    param.args[1] = opts;
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                Bitmap result = (Bitmap) param.getResult();
+                processBitmap(result);
+            }
+        });
+    }
+
+    /**
+     * Hook 通用图片工厂
+     */
+    private void hookBitmapFactory() {
+        Set<String> targetMethods = new HashSet<>(Arrays.asList(
+                "decodeFile", "decodeStream", "decodeResource",
+                "decodeByteArray", "decodeFileDescriptor"
+        ));
+
+        XC_MethodHook factoryHook = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                // 遍历参数寻找 BitmapFactory.Options
+                for (int i = 0; i < param.args.length; i++) {
+                    if (param.args[i] instanceof BitmapFactory.Options) {
+                        forceMutable((BitmapFactory.Options) param.args[i]);
+                        break;
+                    }
+                }
+                // 如果没找到 Options，原则上应该新建一个并注入，
+                // 但 BitmapFactory 的重载非常多，简单起见只处理带 Options 的版本，
+                // 或者依赖它内部调用链最终会走到带 Options 的底层方法。
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                processBitmap((Bitmap) param.getResult());
+            }
+        };
+
+        for (String method : targetMethods) {
+            XposedBridge.hookAllMethods(BitmapFactory.class, method, factoryHook);
+        }
+    }
+
+    /**
+     * 强制修改解码选项
+     */
+    private void forceMutable(BitmapFactory.Options options) {
+        if (options == null) return;
+
+        // 1. 强制可变：这是 JNI 能修改像素的前提
+        // 如果不设置，系统可能会返回 Immutable Bitmap，JNI lockPixels 会失败
+        options.inMutable = true;
+
+        // 2. 禁用硬件位图 (Hardware Bitmap)
+        // Android 8.0+ 引入，存储在显存中，JNI 无法读取。
+        // 必须降级为软件位图 (ARGB_8888 或 RGB_565)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (options.inPreferredConfig == Bitmap.Config.HARDWARE) {
+                // 降级为 ARGB_8888，确保兼容性
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            }
+        }
+    }
+
+    /**
+     * 调用 JNI 处理 Bitmap
+     */
+    private void processBitmap(Bitmap bitmap) {
+        if (bitmap == null) return;
+        if (bitmap.isRecycled()) return;
+
+        // 二次检查：如果 Bitmap 不可变，我们无法原地修改
+        if (!bitmap.isMutable()) {
+            // 可以在这里尝试 copy 一份并 replaceResult，但性能开销大，
+            // 最好还是依靠 beforeHookedMethod 里的 forceMutable。
+            return;
+        }
+
+        try {
+            Eink256Native.ditherBitmap(bitmap);
+        } catch (Throwable t) {
+            // 捕获所有异常，防止导致宿主应用崩溃
+            // 常见错误：UnsatisfiedLinkError (库未加载), IllegalStateException
+        }
+    }
+}
