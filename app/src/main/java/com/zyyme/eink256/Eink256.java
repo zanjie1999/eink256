@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
 
+import java.io.File;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -17,19 +18,36 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
-    private static String MODULE_PATH = null;
+    private static String modulePath;
+
+    String findModuleSo(String soName) {
+        File baseDir = new File(modulePath).getParentFile();
+        File libDir = new File(baseDir, "lib");
+
+        File[] archDirs = libDir.listFiles();
+        if (archDirs != null) {
+            for (File archDir : archDirs) {
+                File candidate = new File(archDir, soName);
+                if (candidate.exists()) {
+                    return candidate.getAbsolutePath();
+                }
+            }
+        }
+        return null;
+    }
 
     @Override
     public void initZygote(StartupParam startupParam) throws Throwable {
         // 获取模块自身的安装路径，用于后续加载 .so 文件
-        // 这是解决 "UnsatisfiedLinkError" 最稳健的方法
-        MODULE_PATH = startupParam.modulePath;
+        modulePath = startupParam.modulePath;
     }
 
     @Override
     public void handleLoadPackage(final LoadPackageParam lpparam) throws Throwable {
         // 防止 Hook 模块自身导致死循环
-        if (lpparam.packageName.equals("com.example.xposed")) return;
+        if (lpparam.packageName.equals("com.zyyme.eink256")) return;
+
+        XposedBridge.log("zyymeEink256: Processing package " + lpparam.packageName);
 
         // 加载 Native 库
         loadNativeLib();
@@ -51,20 +69,17 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
      * 加载 JNI 库的逻辑
      */
     private void loadNativeLib() {
-        try {
-            // 尝试直接加载 (在较新的 Android 版本或某些环境可能有效)
-            System.loadLibrary("zyyme_eink256");
-        } catch (Throwable t1) {
+//        try {
+//            // 尝试直接加载 (在较新的 Android 版本或某些环境可能有效)
+//            System.loadLibrary("zyymeEink256");
+//        } catch (Throwable t1) {
             try {
-                // 这是一个简化的加载逻辑，实际开发中可能需要从 APK 中解压 so 到 cache 目录
-                // 或者依赖 Android 的 nativeLibraryDir 机制。
-                // 这里假设用户已按照教程将 so 放置在正确位置或系统能找到。
-                // 如果是在 LSPosed 环境，通常会有更好的路径支持。
-                // DitherNative.loadLibrary(MODULE_PATH); // 需自行实现带路径的加载
+                // 备用加载方式 抄伏犬的
+                Eink256Native.load(findModuleSo("/libzyymeEink256.so"));
             } catch (Throwable t2) {
-                XposedBridge.log("XposedDither: Native 库加载失败: " + t2.getMessage());
+                XposedBridge.log("zyymeEink256: Native 库加载失败: " + t2.getMessage());
             }
-        }
+//        }
     }
 
     /**
@@ -169,9 +184,19 @@ public class Eink256 implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             return;
         }
 
+        // 只对足够大的位图应用抖动，避免处理小图标等
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        if (width < 64 || height < 64) {
+            return;
+        }
+
+        XposedBridge.log("zyymeEink256: 处理图片: " + width + "x" + height);
+
         try {
             Eink256Native.ditherBitmap(bitmap);
         } catch (Throwable t) {
+            XposedBridge.log("zyymeEink256: 处理出现异常: " + t.getMessage());
             // 捕获所有异常，防止导致宿主应用崩溃
             // 常见错误：UnsatisfiedLinkError (库未加载), IllegalStateException
         }

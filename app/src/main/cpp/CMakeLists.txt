@@ -2,11 +2,11 @@
 cmake_minimum_required(VERSION 3.10.2)
 
 # 声明项目名称
-project("zyyme_eink256")
+project("zyymeEink256")
 
 # 创建共享库 (Shared Library, 即 .so 文件)
 add_library(
-        zyyme_eink256 # 库名称
+        zyymeEink256 # 库名称
         SHARED     # 库类型
 
         # 源文件路径
@@ -26,7 +26,7 @@ find_library(
 
 # 链接库
 target_link_libraries(
-        zyyme_eink256
+        zyymeEink256
         ${log-lib}
         ${jnigraphics-lib}
 )
